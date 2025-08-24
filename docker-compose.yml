@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   movie-compressor:
     build:
@@ -13,20 +11,18 @@ services:
       resources:
         limits:
           cpus: '8.0'
-          memory: 16G
-        reservations:
-          cpus: '4.0'
           memory: 8G
 
     # Environment variables
     environment:
       - PYTHONUNBUFFERED=1
       - FFMPEG_LOG_LEVEL=info
+      - TARGET_SIZE=${TARGET_SIZE:-12.0}
 
     # Volume mounts - separate input and output directories
     volumes:
       # Mount your input movie directory to /data/in
-      - '${INPUT_DIR:-./data/in}:/data/in:ro'
+      - '${INPUT_DIR:-./data/in}:/data/in'
       # Mount your output directory to /data/out
       - '${OUTPUT_DIR:-./data/out}:/data/out'
 
@@ -34,11 +30,15 @@ services:
     working_dir: /app
 
     # Default command - process movies from /data/in to /data/out
-    command: >
-      python3 main.py 
-      /data/in 
-      /data/out 
-      --target-size ${TARGET_SIZE:-12.0}
+    command:
+      [
+        'python',
+        'main.py',
+        '/data/in',
+        '/data/out',
+        '--target-size',
+        '${TARGET_SIZE:-12}',
+      ]
 
     # Restart policy
     restart: unless-stopped

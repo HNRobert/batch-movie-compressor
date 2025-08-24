@@ -99,7 +99,7 @@ class MovieCompressor:
         for encoder in encoders:
             try:
                 result = subprocess.run(['ffmpeg', '-hide_banner', '-f', 'lavfi', '-i', 'testsrc2=duration=1:size=320x240:rate=1', '-c:v', encoder, '-f', 'null', '-'],
-                                        capture_output=True, stderr=subprocess.DEVNULL)
+                                        capture_output=True, timeout=10)
                 if result.returncode == 0:
                     logger.info(f"Using AV1 encoder: {encoder}")
                     return encoder
@@ -156,8 +156,6 @@ class MovieCompressor:
             'ffmpeg', '-i', str(input_path),
             '-c:v', av1_encoder,
             '-b:v', f'{target_bitrate}k',
-            '-maxrate', f'{int(target_bitrate * 1.5)}k',
-            '-bufsize', f'{int(target_bitrate * 2)}k',
             '-g', '240',  # GOP size for 4K
             '-pix_fmt', 'yuv420p10le',  # 10-bit for HDR
         ]
@@ -165,12 +163,10 @@ class MovieCompressor:
         # AV1 encoder specific parameters
         if av1_encoder == 'libsvtav1':
             cmd.extend([
-                '-svtav1-params', 'tune=0:film-grain=8:enable-overlays=1:scd=1:scm=0',
                 '-preset', '6',  # Balance quality and speed
             ])
         elif av1_encoder == 'libaom-av1':
             cmd.extend([
-                '-aom-params', 'tune=ssim:enable-fwd-kf=1:kf-max-dist=240',
                 '-cpu-used', '4',  # Balance quality and speed
             ])
 
@@ -199,7 +195,13 @@ class MovieCompressor:
         # Output options
         cmd.extend([
             '-map', '0:v:0',  # First video stream
-            '-map', '0:a',    # All audio streams
+        ])
+
+        # Only map audio if audio streams exist
+        if audio_streams:
+            cmd.extend(['-map', '0:a'])  # All audio streams
+
+        cmd.extend([
             '-sn',            # Skip subtitles
             '-movflags', '+faststart',
             '-y',  # Overwrite output file
@@ -210,6 +212,7 @@ class MovieCompressor:
 
         # Execute compression
         start_time = time.time()
+        last_log_time = 0
         try:
             with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                   text=True, universal_newlines=True) as process:
@@ -223,8 +226,21 @@ class MovieCompressor:
                             for part in parts:
                                 if part.startswith('time='):
                                     current_time = part.split('=')[1]
-                                    logger.info(
-                                        f"Progress: {current_time}/{duration:.2f}s")
+                                    current_elapsed = time.time() - start_time
+
+                                    # Determine logging interval based on elapsed time
+                                    if current_elapsed <= 10:
+                                        # First 10 seconds: log every 2 seconds
+                                        log_interval = 2
+                                    else:
+                                        # After 10 seconds: log every minute
+                                        log_interval = 60
+
+                                    # Only log if enough time has passed since last log
+                                    if current_elapsed - last_log_time >= log_interval:
+                                        logger.info(
+                                            f"Progress: {current_time}/{duration:.2f}s")
+                                        last_log_time = current_elapsed
                                     break
 
                 return_code = process.wait()
@@ -302,12 +318,15 @@ class MovieCompressor:
 
 
 def main():
+    # Get default target size from environment variable
+    default_target_size = float(os.environ.get('TARGET_SIZE', 12.0))
+
     parser = argparse.ArgumentParser(
         description='Batch Movie Compressor - AV1 encoding')
     parser.add_argument('input_dir', help='Input directory path')
     parser.add_argument('output_dir', help='Output directory path')
-    parser.add_argument('--target-size', type=float, default=12.0,
-                        help='Target file size in GB (default: 12GB)')
+    parser.add_argument('--target-size', type=float, default=default_target_size,
+                        help=f'Target file size in GB (default: {default_target_size}GB)')
     parser.add_argument('--dry-run', action='store_true',
                         help='Dry run mode - only show files to be processed')
 

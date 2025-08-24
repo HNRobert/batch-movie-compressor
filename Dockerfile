@@ -1,33 +1,26 @@
-# Use lightweight Alpine image with FFmpeg
-FROM jrottenberg/ffmpeg:6.1-alpine
+# Use Python Alpine base and install FFmpeg
+FROM python:3.11-alpine
 
-# Install Python
-RUN apk add --no-cache python3 py3-pip
+# Install FFmpeg and dependencies
+RUN apk add --no-cache \
+    ffmpeg \
+    ffmpeg-dev
 
-# Create directories
+# Create working directory
 WORKDIR /app
+
+# Create data directories
 RUN mkdir -p /data/in /data/out
 
-# Copy application
+# Create a non-root user
+RUN adduser -D -s /bin/sh compressor && \
+    chown -R compressor:compressor /data /app
+
+# Copy the main script
 COPY main.py /app/
 
-# Set permissions
-RUN chmod +x /app/main.py
-
-# Create non-root user
-RUN adduser -D -u 1000 compressor && \
-    chown -R compressor:compressor /app /data
+# Set non-root user
 USER compressor
 
-# Default command
-ENTRYPOINT ["python3", "main.py"]
-CMD ["/data/in", "/data/out"]
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD ffmpeg -version > /dev/null 2>&1 || exit 1
-
-# Labels
-LABEL maintainer="Movie Compressor" \
-      description="Lightweight batch movie compressor with AV1 encoding" \
-      version="2.0"
+# Set the working directory
+WORKDIR /app
