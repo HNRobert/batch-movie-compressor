@@ -6,6 +6,15 @@ services:
       dockerfile: Dockerfile
     container_name: batch-movie-compressor
 
+    # GPU support - uncomment for NVIDIA GPU
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
     # Resource limits - adjust based on your hardware
     deploy:
       resources:
@@ -19,6 +28,7 @@ services:
       - FFMPEG_LOG_LEVEL=${FFMPEG_LOG_LEVEL:-info}
       - TARGET_SIZE=${TARGET_SIZE:-12.0}
       - RECURSIVE=${RECURSIVE:-true}
+      - ENABLE_GPU=${ENABLE_GPU:-true}
 
     # Volume mounts - separate input and output directories
     volumes:
@@ -26,6 +36,16 @@ services:
       - '${INPUT_DIR:-./data/in}:/data/in'
       # Mount your output directory to /data/out
       - '${OUTPUT_DIR:-./data/out}:/data/out'
+      # Mount GPU devices for Intel GPU acceleration
+      - '/dev/dri:/dev/dri'
+
+    # Device access for GPU acceleration
+    devices:
+      # Intel GPU support
+      - '/dev/dri:/dev/dri'
+
+    # Privileged mode may be required for GPU access
+    # privileged: true
 
     # Working directory
     working_dir: /app
@@ -64,4 +84,10 @@ services:
 # OUTPUT_DIR=/path/to/compressed/movies
 # TARGET_SIZE=12.0
 # RECURSIVE=true
+# ENABLE_GPU=true
 # FFMPEG_LOG_LEVEL=info
+
+# GPU Usage:
+# For NVIDIA GPU: docker-compose -f docker-compose.yml -f docker-compose.gpu.yml up
+# For Intel GPU: docker-compose up (uses default VAAPI support)
+# For CPU only: Set ENABLE_GPU=false in .env file

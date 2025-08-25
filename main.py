@@ -27,12 +27,21 @@ logger = logging.getLogger(__name__)
 
 
 class MovieCompressor:
-    def __init__(self, input_dir: str, output_dir: str, target_size_gb: float = 12.0, recursive: bool = True):
+    def __init__(self, input_dir: str, output_dir: str, target_size_gb: float = 12.0, recursive: bool = True, enable_gpu: bool = True):
         self.input_dir = Path(input_dir)
         self.output_dir = Path(output_dir)
         self.target_size_gb = target_size_gb
         self.target_size_mb = target_size_gb * 1024
         self.recursive = recursive
+        self.enable_gpu = enable_gpu
+
+        # GPU acceleration capabilities
+        self.gpu_info = {
+            'nvidia': False,
+            'intel': False,
+            'available_encoders': [],
+            'preferred_encoder': None
+        }
 
         # Supported video formats
         self.supported_formats = {'.mkv', '.mp4',
@@ -41,8 +50,10 @@ class MovieCompressor:
         # Create output directory
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Check if FFmpeg is available
+        # Check if FFmpeg is available and detect GPU capabilities
         self._check_ffmpeg()
+        if self.enable_gpu:
+            self._detect_gpu_capabilities()
 
     def _check_ffmpeg(self):
         """Check if FFmpeg is installed and supports AV1"""
@@ -63,6 +74,64 @@ class MovieCompressor:
         except Exception as e:
             logger.error(f"FFmpeg check failed: {e}")
             sys.exit(1)
+
+    def _detect_gpu_capabilities(self):
+        """Detect available GPU acceleration capabilities"""
+        logger.info("Detecting GPU acceleration capabilities...")
+
+        # Check for NVIDIA GPU support
+        try:
+            # Test NVIDIA encoders
+            nvidia_encoders = ['h264_nvenc', 'hevc_nvenc', 'av1_nvenc']
+            for encoder in nvidia_encoders:
+                result = subprocess.run(
+                    ['ffmpeg', '-hide_banner', '-f', 'lavfi', '-i', 'testsrc2=duration=0.1:size=64x64:rate=1',
+                     '-c:v', encoder, '-f', 'null', '-'],
+                    capture_output=True, timeout=5
+                )
+                if result.returncode == 0:
+                    self.gpu_info['nvidia'] = True
+                    self.gpu_info['available_encoders'].append(encoder)
+                    logger.info(f"NVIDIA encoder available: {encoder}")
+        except Exception as e:
+            logger.debug(f"NVIDIA GPU test failed: {e}")
+
+        # Check for Intel GPU support (VAAPI)
+        try:
+            # Test Intel/VAAPI encoders
+            intel_encoders = ['h264_vaapi', 'hevc_vaapi', 'av1_vaapi']
+            for encoder in intel_encoders:
+                result = subprocess.run(
+                    ['ffmpeg', '-hide_banner', '-vaapi_device', '/dev/dri/renderD128',
+                     '-f', 'lavfi', '-i', 'testsrc2=duration=0.1:size=64x64:rate=1',
+                     '-vf', 'format=nv12,hwupload', '-c:v', encoder, '-f', 'null', '-'],
+                    capture_output=True, timeout=5
+                )
+                if result.returncode == 0:
+                    self.gpu_info['intel'] = True
+                    self.gpu_info['available_encoders'].append(encoder)
+                    logger.info(f"Intel VAAPI encoder available: {encoder}")
+        except Exception as e:
+            logger.debug(f"Intel VAAPI test failed: {e}")
+
+        # Determine preferred encoder
+        if 'av1_nvenc' in self.gpu_info['available_encoders']:
+            self.gpu_info['preferred_encoder'] = 'av1_nvenc'
+            logger.info("Using NVIDIA AV1 hardware encoder")
+        elif 'av1_vaapi' in self.gpu_info['available_encoders']:
+            self.gpu_info['preferred_encoder'] = 'av1_vaapi'
+            logger.info("Using Intel VAAPI AV1 hardware encoder")
+        elif 'hevc_nvenc' in self.gpu_info['available_encoders']:
+            self.gpu_info['preferred_encoder'] = 'hevc_nvenc'
+            logger.info(
+                "Using NVIDIA HEVC hardware encoder (AV1 not available)")
+        elif 'hevc_vaapi' in self.gpu_info['available_encoders']:
+            self.gpu_info['preferred_encoder'] = 'hevc_vaapi'
+            logger.info(
+                "Using Intel VAAPI HEVC hardware encoder (AV1 not available)")
+        else:
+            logger.info(
+                "No hardware encoders available, will use software encoding")
 
     def get_video_info(self, video_path: Path) -> Dict:
         """Get video information using ffprobe"""
@@ -92,22 +161,92 @@ class MovieCompressor:
         video_bitrate_kbps = int((video_size_mb * 8 * 1024) / duration)
         return max(video_bitrate_kbps, 1000)  # Minimum 1Mbps
 
-    def get_av1_encoder(self) -> str:
-        """Get available AV1 encoder"""
-        encoders = ['libsvtav1', 'libaom-av1']
+    def get_best_encoder(self) -> tuple[str, dict]:
+        """Get the best available encoder (GPU preferred, then CPU)"""
+        encoder_config = {
+            'encoder': None,
+            'hw_device': None,
+            'input_filters': [],
+            'encoder_params': {},
+            'output_format': 'mkv'
+        }
 
-        for encoder in encoders:
+        # Try GPU encoders first if enabled
+        if self.enable_gpu and self.gpu_info['preferred_encoder']:
+            preferred = self.gpu_info['preferred_encoder']
+
+            if preferred == 'av1_nvenc':
+                encoder_config.update({
+                    'encoder': 'av1_nvenc',
+                    'encoder_params': {
+                        'preset': 'p4',  # Medium preset for balance
+                        'tune': 'hq',    # High quality
+                        'rc': 'vbr',     # Variable bitrate
+                    }
+                })
+                logger.info("Using NVIDIA AV1 hardware encoder")
+                return preferred, encoder_config
+
+            elif preferred == 'av1_vaapi':
+                encoder_config.update({
+                    'encoder': 'av1_vaapi',
+                    'hw_device': '/dev/dri/renderD128',
+                    'input_filters': ['format=nv12', 'hwupload'],
+                    'encoder_params': {
+                        'quality': '25',  # Good quality
+                    }
+                })
+                logger.info("Using Intel VAAPI AV1 hardware encoder")
+                return preferred, encoder_config
+
+            elif preferred == 'hevc_nvenc':
+                encoder_config.update({
+                    'encoder': 'hevc_nvenc',
+                    'encoder_params': {
+                        'preset': 'medium',
+                        'tune': 'hq',
+                        'rc': 'vbr',
+                    },
+                    'output_format': 'mp4'  # HEVC works better with MP4
+                })
+                logger.info("Using NVIDIA HEVC hardware encoder (fallback)")
+                return preferred, encoder_config
+
+            elif preferred == 'hevc_vaapi':
+                encoder_config.update({
+                    'encoder': 'hevc_vaapi',
+                    'hw_device': '/dev/dri/renderD128',
+                    'input_filters': ['format=nv12', 'hwupload'],
+                    'encoder_params': {
+                        'quality': '25',
+                    },
+                    'output_format': 'mp4'
+                })
+                logger.info(
+                    "Using Intel VAAPI HEVC hardware encoder (fallback)")
+                return preferred, encoder_config
+
+        # Fallback to software AV1 encoders
+        software_encoders = ['libsvtav1', 'libaom-av1']
+        for encoder in software_encoders:
             try:
                 result = subprocess.run(['ffmpeg', '-hide_banner', '-f', 'lavfi', '-i', 'testsrc2=duration=1:size=320x240:rate=1', '-c:v', encoder, '-f', 'null', '-'],
                                         capture_output=True, timeout=10)
                 if result.returncode == 0:
-                    logger.info(f"Using AV1 encoder: {encoder}")
-                    return encoder
+                    encoder_config.update({
+                        'encoder': encoder,
+                        'encoder_params': {
+                            'preset': '6' if encoder == 'libsvtav1' else None,
+                            'cpu-used': '4' if encoder == 'libaom-av1' else None,
+                        }
+                    })
+                    logger.info(f"Using software AV1 encoder: {encoder}")
+                    return encoder, encoder_config
             except:
                 continue
 
-        logger.error("No AV1 encoder available")
-        raise Exception("AV1 encoder not available")
+        logger.error("No suitable encoder available")
+        raise Exception("No encoder available")
 
     def compress_video(self, input_path: Path, output_path: Path) -> bool:
         """Compress a single video file"""
@@ -144,31 +283,63 @@ class MovieCompressor:
         logger.info(
             f"Target bitrate: {target_bitrate}kbps, duration: {duration:.2f}s")
 
-        # Get AV1 encoder
+        # Get best available encoder
         try:
-            av1_encoder = self.get_av1_encoder()
+            encoder_name, encoder_config = self.get_best_encoder()
         except Exception as e:
-            logger.error(f"AV1 encoder error: {e}")
+            logger.error(f"Encoder selection error: {e}")
             return False
 
         # Build FFmpeg command
-        cmd = [
-            'ffmpeg', '-i', str(input_path),
-            '-c:v', av1_encoder,
-            '-b:v', f'{target_bitrate}k',
-            '-g', '240',  # GOP size for 4K
-            '-pix_fmt', 'yuv420p10le',  # 10-bit for HDR
-        ]
+        cmd = ['ffmpeg']
 
-        # AV1 encoder specific parameters
-        if av1_encoder == 'libsvtav1':
+        # Add hardware device if needed
+        if encoder_config.get('hw_device'):
+            cmd.extend(['-vaapi_device', encoder_config['hw_device']])
+
+        cmd.extend(['-i', str(input_path)])
+
+        # Add input filters for hardware encoding
+        if encoder_config.get('input_filters'):
+            cmd.extend(['-vf', ','.join(encoder_config['input_filters'])])
+
+        # Video encoding settings
+        cmd.extend(['-c:v', encoder_config['encoder']])
+
+        # Hardware encoders use different bitrate control
+        if 'nvenc' in encoder_config['encoder']:
+            # NVIDIA encoder settings
+            cmd.extend(['-b:v', f'{target_bitrate}k'])
+            if encoder_config['encoder_params'].get('preset'):
+                cmd.extend(
+                    ['-preset', encoder_config['encoder_params']['preset']])
+            if encoder_config['encoder_params'].get('tune'):
+                cmd.extend(['-tune', encoder_config['encoder_params']['tune']])
+            if encoder_config['encoder_params'].get('rc'):
+                cmd.extend(['-rc', encoder_config['encoder_params']['rc']])
+        elif 'vaapi' in encoder_config['encoder']:
+            # Intel VAAPI encoder settings
+            cmd.extend(['-b:v', f'{target_bitrate}k'])
+            if encoder_config['encoder_params'].get('quality'):
+                cmd.extend(
+                    ['-global_quality', encoder_config['encoder_params']['quality']])
+        else:
+            # Software encoder settings
             cmd.extend([
-                '-preset', '6',  # Balance quality and speed
+                '-b:v', f'{target_bitrate}k',
+                '-g', '240',  # GOP size for 4K
+                '-pix_fmt', 'yuv420p10le',  # 10-bit for HDR
             ])
-        elif av1_encoder == 'libaom-av1':
-            cmd.extend([
-                '-cpu-used', '4',  # Balance quality and speed
-            ])
+
+            # Software encoder specific parameters
+            if encoder_config['encoder'] == 'libsvtav1':
+                if encoder_config['encoder_params'].get('preset'):
+                    cmd.extend(
+                        ['-preset', encoder_config['encoder_params']['preset']])
+            elif encoder_config['encoder'] == 'libaom-av1':
+                if encoder_config['encoder_params'].get('cpu-used'):
+                    cmd.extend(
+                        ['-cpu-used', encoder_config['encoder_params']['cpu-used']])
 
         # HDR handling
         if 'color_primaries' in video_stream:
@@ -301,6 +472,40 @@ class MovieCompressor:
 
         return sorted(video_files)
 
+    def _generate_output_filename(self, input_file: Path) -> str:
+        """Generate appropriate output filename based on encoder capabilities"""
+        try:
+            encoder_name, encoder_config = self.get_best_encoder()
+
+            # Determine codec and suffix
+            if 'av1' in encoder_config['encoder']:
+                codec_suffix = "AV1"
+            elif 'hevc' in encoder_config['encoder'] or 'h265' in encoder_config['encoder']:
+                codec_suffix = "HEVC"
+            elif 'h264' in encoder_config['encoder']:
+                codec_suffix = "H264"
+            else:
+                codec_suffix = "COMPRESSED"
+
+            # Determine acceleration type
+            if 'nvenc' in encoder_config['encoder']:
+                accel_suffix = "_GPU_NVIDIA"
+            elif 'vaapi' in encoder_config['encoder']:
+                accel_suffix = "_GPU_INTEL"
+            else:
+                accel_suffix = ""
+
+            # Get file extension
+            ext = encoder_config.get('output_format', 'mkv')
+            if not ext.startswith('.'):
+                ext = f'.{ext}'
+
+            return f"{input_file.stem}_{codec_suffix}_4K_HDR10{accel_suffix}{ext}"
+
+        except:
+            # Fallback filename
+            return f"{input_file.stem}_COMPRESSED.mkv"
+
     def process_all_videos(self):
         """Process all video files"""
         video_files = self.find_video_files()
@@ -323,11 +528,11 @@ class MovieCompressor:
                 output_subdir = self.output_dir / \
                     video_file.parent.relative_to(self.input_dir)
                 output_subdir.mkdir(parents=True, exist_ok=True)
-                output_filename = f"{video_file.stem}_AV1_4K_HDR10.mkv"
+                output_filename = self._generate_output_filename(video_file)
                 output_path = output_subdir / output_filename
             else:
                 # Place in root output directory
-                output_filename = f"{video_file.stem}_AV1_4K_HDR10.mkv"
+                output_filename = self._generate_output_filename(video_file)
                 output_path = self.output_dir / output_filename
 
             # Skip existing files
@@ -354,9 +559,11 @@ def main():
     default_target_size = float(os.environ.get('TARGET_SIZE', 12.0))
     default_recursive = os.environ.get(
         'RECURSIVE', 'true').lower() in ('true', '1', 'yes', 'on')
+    default_gpu = os.environ.get(
+        'ENABLE_GPU', 'true').lower() in ('true', '1', 'yes', 'on')
 
     parser = argparse.ArgumentParser(
-        description='Batch Movie Compressor - AV1 encoding')
+        description='Batch Movie Compressor - AV1 encoding with GPU acceleration support')
     parser.add_argument('input_dir', help='Input directory path')
     parser.add_argument('output_dir', help='Output directory path')
     parser.add_argument('--target-size', type=float, default=default_target_size,
@@ -365,6 +572,10 @@ def main():
                         help='Search recursively in subdirectories (default: %(default)s)')
     parser.add_argument('--no-recursive', dest='recursive', action='store_false',
                         help='Search only in the top-level directory')
+    parser.add_argument('--gpu', action='store_true', default=default_gpu,
+                        help='Enable GPU acceleration (default: %(default)s)')
+    parser.add_argument('--no-gpu', dest='gpu', action='store_false',
+                        help='Disable GPU acceleration, use CPU only')
     parser.add_argument('--dry-run', action='store_true',
                         help='Dry run mode - only show files to be processed')
 
@@ -378,7 +589,7 @@ def main():
     if args.dry_run:
         # Dry run mode
         compressor = MovieCompressor(
-            args.input_dir, args.output_dir, args.target_size, args.recursive)
+            args.input_dir, args.output_dir, args.target_size, args.recursive, args.gpu)
         video_files = compressor.find_video_files()
 
         print("\n=== DRY RUN MODE ===")
@@ -386,6 +597,12 @@ def main():
         print(f"Output directory: {args.output_dir}")
         print(f"Target size: {args.target_size}GB")
         print(f"Recursive search: {args.recursive}")
+        print(f"GPU acceleration: {args.gpu}")
+
+        # Show GPU capabilities if enabled
+        if args.gpu:
+            print(f"GPU capabilities: {compressor.gpu_info}")
+
         print(f"Video files found: {len(video_files)}")
 
         if video_files:
@@ -393,7 +610,11 @@ def main():
             for video_file in video_files:
                 file_size_gb = video_file.stat().st_size / (1024**3)
                 rel_path = video_file.relative_to(Path(args.input_dir))
-                print(f"  - {rel_path} ({file_size_gb:.2f}GB)")
+                # Show what filename would be generated
+                output_filename = compressor._generate_output_filename(
+                    video_file)
+                print(
+                    f"  - {rel_path} ({file_size_gb:.2f}GB) -> {output_filename}")
 
         return
 
@@ -403,9 +624,10 @@ def main():
     logger.info(f"Output directory: {args.output_dir}")
     logger.info(f"Target size: {args.target_size}GB")
     logger.info(f"Recursive search: {args.recursive}")
+    logger.info(f"GPU acceleration: {args.gpu}")
 
     compressor = MovieCompressor(
-        args.input_dir, args.output_dir, args.target_size, args.recursive)
+        args.input_dir, args.output_dir, args.target_size, args.recursive, args.gpu)
     compressor.process_all_videos()
 
 

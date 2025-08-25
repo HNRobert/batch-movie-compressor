@@ -1,10 +1,22 @@
-# Use Python Alpine base and install FFmpeg
+# Use Python Alpine base with GPU acceleration support
 FROM python:3.11-alpine
 
-# Install FFmpeg and dependencies
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+
+# Install system dependencies including FFmpeg with GPU support
 RUN apk add --no-cache \
     ffmpeg \
-    ffmpeg-dev
+    ffmpeg-dev \
+    # GPU acceleration libraries for Intel/AMD
+    libva \
+    libva-utils \
+    libdrm \
+    libdrm-dev \
+    mesa-va-gallium \
+    mesa-vdpau-gallium \
+    # Additional libraries that may be available
+    mesa-dri-gallium 
 
 # Create working directory
 WORKDIR /app
