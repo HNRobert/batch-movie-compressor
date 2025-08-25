@@ -11,9 +11,8 @@ import json
 import logging
 import argparse
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 import time
-import shutil
 
 # Configure logging
 logging.basicConfig(
@@ -28,11 +27,12 @@ logger = logging.getLogger(__name__)
 
 
 class MovieCompressor:
-    def __init__(self, input_dir: str, output_dir: str, target_size_gb: float = 12.0):
+    def __init__(self, input_dir: str, output_dir: str, target_size_gb: float = 12.0, recursive: bool = True):
         self.input_dir = Path(input_dir)
         self.output_dir = Path(output_dir)
         self.target_size_gb = target_size_gb
         self.target_size_mb = target_size_gb * 1024
+        self.recursive = recursive
 
         # Supported video formats
         self.supported_formats = {'.mkv', '.mp4',
@@ -274,11 +274,31 @@ class MovieCompressor:
         """Find all video files in input directory"""
         video_files = []
 
-        for file_path in self.input_dir.rglob('*'):
-            if file_path.is_file() and file_path.suffix.lower() in self.supported_formats:
-                video_files.append(file_path)
+        if self.recursive:
+            # Recursive search in all subdirectories
+            logger.info("Searching recursively in all subdirectories...")
+            for file_path in self.input_dir.rglob('*'):
+                if file_path.is_file() and file_path.suffix.lower() in self.supported_formats:
+                    video_files.append(file_path)
+        else:
+            # Search only in the top-level directory
+            logger.info("Searching only in the top-level directory...")
+            for file_path in self.input_dir.iterdir():
+                if file_path.is_file() and file_path.suffix.lower() in self.supported_formats:
+                    video_files.append(file_path)
 
-        logger.info(f"Found {len(video_files)} video files")
+        logger.info(
+            f"Found {len(video_files)} video files ({'recursive' if self.recursive else 'non-recursive'} search)")
+
+        # Log directory structure if recursive and files found
+        if self.recursive and video_files:
+            directories = set(file.parent for file in video_files)
+            logger.info(f"Files found in {len(directories)} directories:")
+            for directory in sorted(directories):
+                rel_dir = directory.relative_to(self.input_dir)
+                count = len([f for f in video_files if f.parent == directory])
+                logger.info(f"  {rel_dir or '.'}: {count} files")
+
         return sorted(video_files)
 
     def process_all_videos(self):
@@ -293,22 +313,34 @@ class MovieCompressor:
         total_count = len(video_files)
 
         for i, video_file in enumerate(video_files, 1):
-            logger.info(f"Processing {i}/{total_count}: {video_file.name}")
+            # Calculate relative path from input directory
+            rel_path = video_file.relative_to(self.input_dir)
+            logger.info(f"Processing {i}/{total_count}: {rel_path}")
 
-            # Generate output filename
-            output_filename = f"{video_file.stem}_AV1_4K_HDR10.mkv"
-            output_path = self.output_dir / output_filename
+            # Generate output path maintaining directory structure
+            if self.recursive and video_file.parent != self.input_dir:
+                # Maintain subdirectory structure
+                output_subdir = self.output_dir / \
+                    video_file.parent.relative_to(self.input_dir)
+                output_subdir.mkdir(parents=True, exist_ok=True)
+                output_filename = f"{video_file.stem}_AV1_4K_HDR10.mkv"
+                output_path = output_subdir / output_filename
+            else:
+                # Place in root output directory
+                output_filename = f"{video_file.stem}_AV1_4K_HDR10.mkv"
+                output_path = self.output_dir / output_filename
 
             # Skip existing files
             if output_path.exists():
-                logger.info(f"Skipping existing file: {output_filename}")
+                logger.info(
+                    f"Skipping existing file: {output_path.relative_to(self.output_dir)}")
                 continue
 
             # Compress video
             if self.compress_video(video_file, output_path):
                 success_count += 1
             else:
-                logger.error(f"Compression failed: {video_file.name}")
+                logger.error(f"Compression failed: {rel_path}")
                 # Remove failed output file
                 if output_path.exists():
                     output_path.unlink()
@@ -318,8 +350,10 @@ class MovieCompressor:
 
 
 def main():
-    # Get default target size from environment variable
+    # Get default values from environment variables
     default_target_size = float(os.environ.get('TARGET_SIZE', 12.0))
+    default_recursive = os.environ.get(
+        'RECURSIVE', 'true').lower() in ('true', '1', 'yes', 'on')
 
     parser = argparse.ArgumentParser(
         description='Batch Movie Compressor - AV1 encoding')
@@ -327,6 +361,10 @@ def main():
     parser.add_argument('output_dir', help='Output directory path')
     parser.add_argument('--target-size', type=float, default=default_target_size,
                         help=f'Target file size in GB (default: {default_target_size}GB)')
+    parser.add_argument('--recursive', action='store_true', default=default_recursive,
+                        help='Search recursively in subdirectories (default: %(default)s)')
+    parser.add_argument('--no-recursive', dest='recursive', action='store_false',
+                        help='Search only in the top-level directory')
     parser.add_argument('--dry-run', action='store_true',
                         help='Dry run mode - only show files to be processed')
 
@@ -340,18 +378,22 @@ def main():
     if args.dry_run:
         # Dry run mode
         compressor = MovieCompressor(
-            args.input_dir, args.output_dir, args.target_size)
+            args.input_dir, args.output_dir, args.target_size, args.recursive)
         video_files = compressor.find_video_files()
 
         print("\n=== DRY RUN MODE ===")
         print(f"Input directory: {args.input_dir}")
         print(f"Output directory: {args.output_dir}")
         print(f"Target size: {args.target_size}GB")
+        print(f"Recursive search: {args.recursive}")
         print(f"Video files found: {len(video_files)}")
 
-        for video_file in video_files:
-            file_size_gb = video_file.stat().st_size / (1024**3)
-            print(f"  - {video_file.name} ({file_size_gb:.2f}GB)")
+        if video_files:
+            print("\nFiles to be processed:")
+            for video_file in video_files:
+                file_size_gb = video_file.stat().st_size / (1024**3)
+                rel_path = video_file.relative_to(Path(args.input_dir))
+                print(f"  - {rel_path} ({file_size_gb:.2f}GB)")
 
         return
 
@@ -360,9 +402,10 @@ def main():
     logger.info(f"Input directory: {args.input_dir}")
     logger.info(f"Output directory: {args.output_dir}")
     logger.info(f"Target size: {args.target_size}GB")
+    logger.info(f"Recursive search: {args.recursive}")
 
     compressor = MovieCompressor(
-        args.input_dir, args.output_dir, args.target_size)
+        args.input_dir, args.output_dir, args.target_size, args.recursive)
     compressor.process_all_videos()
 
 

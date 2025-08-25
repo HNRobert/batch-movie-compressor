@@ -16,8 +16,9 @@ services:
     # Environment variables
     environment:
       - PYTHONUNBUFFERED=1
-      - FFMPEG_LOG_LEVEL=info
+      - FFMPEG_LOG_LEVEL=${FFMPEG_LOG_LEVEL:-info}
       - TARGET_SIZE=${TARGET_SIZE:-12.0}
+      - RECURSIVE=${RECURSIVE:-true}
 
     # Volume mounts - separate input and output directories
     volumes:
@@ -30,6 +31,7 @@ services:
     working_dir: /app
 
     # Default command - process movies from /data/in to /data/out
+    # The recursive flag is controlled by the RECURSIVE environment variable
     command:
       [
         'python',
@@ -61,3 +63,5 @@ services:
 # INPUT_DIR=/path/to/your/original/movies
 # OUTPUT_DIR=/path/to/compressed/movies
 # TARGET_SIZE=12.0
+# RECURSIVE=true
+# FFMPEG_LOG_LEVEL=info
