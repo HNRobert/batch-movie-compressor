@@ -4,15 +4,15 @@ Batch Movie Compressor - AV1 encoding for 4K HDR movies
 Compress ~30GB movies to ~12GB while maintaining 4K HDR10 quality
 """
 
-import os
-import sys
-import subprocess
+import argparse
 import json
 import logging
-import argparse
+import os
+import subprocess
+import sys
+import time
 from pathlib import Path
 from typing import Dict, List
-import time
 
 # Configure logging
 logging.basicConfig(

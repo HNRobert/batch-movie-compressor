@@ -5,11 +5,19 @@ on:
     branches:
       - main
       - develop
+    paths:
+      - 'Dockerfile'
+      - '*.py'
+      - '.github/workflows/docker-publish.yml'
     tags:
       - 'v*'
   pull_request:
     branches:
       - main
+    paths:
+      - 'Dockerfile'
+      - '*.py'
+      - '.github/workflows/docker-publish.yml'
 
 env:
   REGISTRY: ghcr.io
