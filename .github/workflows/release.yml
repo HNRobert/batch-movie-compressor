@@ -1,0 +1,54 @@
+name: Create Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (e.g., v1.0.0)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Is this a prerelease?'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.event.inputs.version }}
+          release_name: Release ${{ github.event.inputs.version }}
+          body: |
+            ## Changes in this release
+
+            ### Features
+            - Batch movie compression with AV1 encoding
+            - 4K HDR10 support
+            - Docker containerization
+            - Automated builds and releases
+
+            ### Docker Image
+            ```bash
+            docker pull ghcr.io/${{ github.repository }}:${{ github.event.inputs.version }}
+            ```
+
+            ### Usage
+            ```bash
+            docker run -v /path/to/input:/data/in -v /path/to/output:/data/out ghcr.io/${{ github.repository }}:${{ github.event.inputs.version }} python main.py /data/in /data/out
+            ```
+
+            See [README.md](README.md) for detailed usage instructions.
+          draft: false
+          prerelease: ${{ github.event.inputs.prerelease }}

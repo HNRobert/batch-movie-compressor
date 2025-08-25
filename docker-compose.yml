@@ -1,9 +1,9 @@
 services:
-  movie-compressor:
+  batch-movie-compressor:
+    image: ghcr.io/HNRobert/batch-movie-compressor:latest
     build:
       context: .
       dockerfile: Dockerfile
-    image: movie-compressor:latest
     container_name: batch-movie-compressor
 
     # Resource limits - adjust based on your hardware

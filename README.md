@@ -59,7 +59,7 @@ docker-compose build
 docker-compose up -d
 
 # View logs
-docker-compose logs -f movie-compressor
+docker-compose logs -f batch-movie-compressor
 ```
 
 ## Compression Settings
@@ -167,7 +167,7 @@ Adjust encoding presets in `config.py`:
 
 ### Log Files
 
-- Container logs: `docker-compose logs movie-compressor`
+- Container logs: `docker-compose logs batch-movie-compressor`
 - Application logs: `/data/out/compression.log`
 - FFmpeg detailed logs: Set `FFMPEG_LOG_LEVEL=debug`
 
