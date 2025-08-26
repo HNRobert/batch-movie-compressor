@@ -1,9 +1,6 @@
 services:
   batch-movie-compressor:
     image: ghcr.io/hnrobert/batch-movie-compressor:latest
-    build:
-      context: .
-      dockerfile: Dockerfile
     container_name: batch-movie-compressor
 
     # GPU support - uncomment for NVIDIA GPU
@@ -19,14 +16,14 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '8.0'
+          cpus: '4.0'
           memory: 8G
 
     # Environment variables
     environment:
       - PYTHONUNBUFFERED=1
-      - INPUT_DIR=${INPUT_DIR:-./data/in}
-      - OUTPUT_DIR=${OUTPUT_DIR:-./data/out}
+      - INPUT_DIR=/data/in
+      - OUTPUT_DIR=/data/out
       - FFMPEG_LOG_LEVEL=${FFMPEG_LOG_LEVEL:-info}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - LOG_PATH=${LOG_PATH:-/data/out/compression.log}
@@ -50,9 +47,9 @@ services:
     # Volume mounts - separate input and output directories
     volumes:
       # Mount your input movie directory to /data/in
-      - '${INPUT_DIR:-./data/in}:/data/in'
+      - '${INPUT_MOUNT_DIR:-./data/in}:/data/in'
       # Mount your output directory to /data/out
-      - '${OUTPUT_DIR:-./data/out}:/data/out'
+      - '${OUTPUT_MOUNT_DIR:-./data/out}:/data/out'
       # Mount GPU devices for Intel GPU acceleration
       - '/dev/dri:/dev/dri'
 
@@ -111,6 +108,5 @@ services:
 # PROGRESS_LOG_INTERVAL_SEC=60
 
 # GPU Usage:
-# For NVIDIA GPU: docker-compose -f docker-compose.yml -f docker-compose.gpu.yml up
 # For Intel GPU: docker-compose up (uses default VAAPI support)
 # For CPU only: Set ENABLE_GPU=false in .env file
