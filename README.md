@@ -6,6 +6,7 @@ A lightweight AV1-based 4K HDR movie batch compression tool that compresses ~30G
 
 - 🎬 **Batch Processing**: Automatically process all movie files in a folder
 - 🚀 **AV1 Encoding**: Uses latest AV1 encoders (SVT-AV1 or libaom-av1)
+- ⚡ **GPU Acceleration**: Supports NVIDIA (NVENC/CUVID) and Intel (VAAPI) hardware acceleration
 - 🌈 **HDR Support**: Complete HDR10 metadata and color information preservation
 - 📏 **Precise Size Control**: Smart bitrate calculation to achieve target file size
 - 🔊 **Audio Optimization**: Automatic best audio encoding selection (EAC-3 for 5.1+, AAC for stereo)
@@ -70,6 +71,35 @@ docker compose logs -f batch-movie-compressor
 ```
 
 ## Compression Settings
+
+### GPU Acceleration
+
+The script supports hardware acceleration for both encoding and decoding:
+
+**NVIDIA GPU (NVENC/CUVID)**:
+
+- Encoders: H.264, HEVC/H.265, AV1
+- Decoders: H.264, HEVC/H.265, AV1, VP9, MPEG-2
+
+**Intel GPU (VAAPI)**:
+
+- Encoders: H.264, HEVC/H.265, AV1
+- Decoders: H.264, HEVC/H.265, AV1, VP9
+
+Configuration via environment variables:
+
+```bash
+# Enable/disable GPU acceleration
+ENABLE_GPU=true
+
+# Force specific encoder/decoder
+PREFERRED_ENCODER=av1_nvenc        # Optional
+PREFERRED_DECODER=hevc_cuvid       # Optional
+FORCE_GPU_DECODE=false             # Force GPU decode even if not optimal
+
+# Intel GPU device path
+VAAPI_DEVICE=/dev/dri/renderD128
+```
 
 ### AV1 Encoder Selection
 

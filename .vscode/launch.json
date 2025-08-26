@@ -26,6 +26,8 @@
                 // GPU/Encoder
                 "VAAPI_DEVICE": "/dev/dri/renderD128",
                 "PREFERRED_ENCODER": "", // e.g., av1_nvenc|av1_vaapi|libsvtav1|libaom-av1
+                "PREFERRED_DECODER": "", // e.g., hevc_cuvid|h264_vaapi|av1_cuvid
+                "FORCE_GPU_DECODE": "false", // true|false
                 "OUTPUT_FORMAT": "", // mkv|mp4 (optional)
                 // Bitrates and safety
                 "AUDIO_BITRATE_KBPS": "640",
@@ -63,6 +65,8 @@
                 // GPU/Encoder
                 "VAAPI_DEVICE": "/dev/dri/renderD128",
                 "PREFERRED_ENCODER": "",
+                "PREFERRED_DECODER": "",
+                "FORCE_GPU_DECODE": "false",
                 "OUTPUT_FORMAT": "",
                 // Bitrates and safety
                 "AUDIO_BITRATE_KBPS": "640",

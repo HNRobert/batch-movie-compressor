@@ -80,6 +80,10 @@ class MovieCompressor:
             'VAAPI_DEVICE', '/dev/dri/renderD128')
         self.preferred_encoder_env = os.environ.get(
             'PREFERRED_ENCODER')  # e.g., av1_nvenc, av1_vaapi, libsvtav1
+        self.preferred_decoder_env = os.environ.get(
+            'PREFERRED_DECODER')  # e.g., hevc_cuvid, h264_vaapi
+        self.force_gpu_decode = os.environ.get(
+            'FORCE_GPU_DECODE', 'false').strip().lower() in ('true', '1', 'yes', 'on')  # Force GPU decoding even if not optimal
         self.output_format_env = os.environ.get(
             'OUTPUT_FORMAT')  # e.g., mkv, mp4
         self.eac3_bitrate_kbps = int(
@@ -95,7 +99,9 @@ class MovieCompressor:
             'nvidia': False,
             'intel': False,
             'available_encoders': [],
-            'preferred_encoder': None
+            'available_decoders': [],
+            'preferred_encoder': None,
+            'preferred_decoder': None
         }
 
         # Supported video formats
@@ -157,6 +163,31 @@ class MovieCompressor:
                     self.gpu_info['nvidia'] = True
                     self.gpu_info['available_encoders'].append(encoder)
                     logger.info(f"NVIDIA encoder available: {encoder}")
+
+            # Test NVIDIA decoders
+            nvidia_decoders = ['h264_cuvid',
+                               'hevc_cuvid', 'av1_cuvid', 'vp9_cuvid']
+            for decoder in nvidia_decoders:
+                try:
+                    # Test with a simple probe command
+                    result = subprocess.run(
+                        ['ffmpeg', '-hide_banner', '-f', 'lavfi', '-i', 'testsrc2=duration=0.1:size=64x64:rate=1',
+                         '-c:v', 'libx264', '-t', '0.1', '-f', 'h264', 'pipe:1'],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5
+                    )
+                    if result.returncode == 0 and result.stdout:
+                        # Test if decoder can handle the stream
+                        test_decode = subprocess.run(
+                            ['ffmpeg', '-hide_banner', '-c:v', decoder,
+                                '-i', 'pipe:0', '-f', 'null', '-'],
+                            input=result.stdout, capture_output=True, timeout=5
+                        )
+                        if test_decode.returncode == 0:
+                            self.gpu_info['available_decoders'].append(decoder)
+                            logger.info(f"NVIDIA decoder available: {decoder}")
+                except:
+                    continue
+
         except Exception as e:
             logger.debug(f"NVIDIA GPU test failed: {e}")
 
@@ -175,6 +206,40 @@ class MovieCompressor:
                     self.gpu_info['intel'] = True
                     self.gpu_info['available_encoders'].append(encoder)
                     logger.info(f"Intel VAAPI encoder available: {encoder}")
+
+            # Test Intel/VAAPI decoders
+            if self.gpu_info['intel']:  # Only test if Intel GPU is detected
+                intel_decoders = ['h264_vaapi',
+                                  'hevc_vaapi', 'av1_vaapi', 'vp9_vaapi']
+                for decoder in intel_decoders:
+                    try:
+                        # Simple test with VAAPI device
+                        result = subprocess.run(
+                            ['ffmpeg', '-hide_banner', '-vaapi_device', self.vaapi_device,
+                             '-f', 'lavfi', '-i', 'testsrc2=duration=0.1:size=64x64:rate=1',
+                             '-c:v', 'libx264', '-t', '0.1', '-f', 'h264', '/tmp/test_vaapi_decode.h264'],
+                            capture_output=True, timeout=5
+                        )
+                        if result.returncode == 0:
+                            # Test decode
+                            test_result = subprocess.run(
+                                ['ffmpeg', '-hide_banner', '-vaapi_device', self.vaapi_device,
+                                 '-hwaccel', 'vaapi', '-i', '/tmp/test_vaapi_decode.h264', '-f', 'null', '-'],
+                                capture_output=True, timeout=5
+                            )
+                            if test_result.returncode == 0:
+                                self.gpu_info['available_decoders'].append(
+                                    decoder)
+                                logger.info(
+                                    f"Intel VAAPI decoder available: {decoder}")
+                            # Clean up test file
+                            try:
+                                os.unlink('/tmp/test_vaapi_decode.h264')
+                            except:
+                                pass
+                    except:
+                        continue
+
         except Exception as e:
             logger.debug(f"Intel VAAPI test failed: {e}")
 
@@ -196,6 +261,26 @@ class MovieCompressor:
         else:
             logger.info(
                 "No hardware encoders available, will use software encoding")
+
+        # Determine preferred decoder
+        if 'hevc_cuvid' in self.gpu_info['available_decoders']:
+            self.gpu_info['preferred_decoder'] = 'hevc_cuvid'
+            logger.info("Using NVIDIA CUVID hardware decoder")
+        elif 'h264_cuvid' in self.gpu_info['available_decoders']:
+            self.gpu_info['preferred_decoder'] = 'h264_cuvid'
+            logger.info("Using NVIDIA H.264 CUVID hardware decoder")
+        elif 'av1_cuvid' in self.gpu_info['available_decoders']:
+            self.gpu_info['preferred_decoder'] = 'av1_cuvid'
+            logger.info("Using NVIDIA AV1 CUVID hardware decoder")
+        elif 'hevc_vaapi' in self.gpu_info['available_decoders']:
+            self.gpu_info['preferred_decoder'] = 'hevc_vaapi'
+            logger.info("Using Intel VAAPI HEVC hardware decoder")
+        elif 'h264_vaapi' in self.gpu_info['available_decoders']:
+            self.gpu_info['preferred_decoder'] = 'h264_vaapi'
+            logger.info("Using Intel VAAPI H.264 hardware decoder")
+        else:
+            logger.info(
+                "No hardware decoders available, will use software decoding")
 
     def get_video_info(self, video_path: Path) -> Dict:
         """Get video information using ffprobe"""
@@ -230,6 +315,60 @@ class MovieCompressor:
 
     def min_video_bit_rate(self) -> int:
         return self.min_video_bitrate_kbps
+
+    def get_best_decoder(self, video_codec: str) -> Optional[str]:
+        """Get the best available hardware decoder for the given codec"""
+        if not self.enable_gpu:
+            return None
+
+        # If a preferred decoder is forced via env, use that directly
+        if self.preferred_decoder_env:
+            forced_decoder = self.preferred_decoder_env.strip()
+            if forced_decoder in self.gpu_info['available_decoders']:
+                logger.info(
+                    f"Using forced decoder: {forced_decoder} for codec: {video_codec}")
+                return forced_decoder
+            else:
+                logger.warning(
+                    f"Forced decoder {forced_decoder} not available, falling back to auto selection")
+
+        # Map video codec to corresponding hardware decoders
+        codec_to_decoders = {
+            'h264': ['h264_cuvid', 'h264_vaapi'],
+            'avc': ['h264_cuvid', 'h264_vaapi'],  # H.264 alias
+            'hevc': ['hevc_cuvid', 'hevc_vaapi'],
+            'h265': ['hevc_cuvid', 'hevc_vaapi'],  # HEVC alias
+            'av1': ['av1_cuvid', 'av1_vaapi'],
+            'vp9': ['vp9_cuvid', 'vp9_vaapi'],  # VP9 support
+            'mpeg2': ['mpeg2_cuvid'],  # MPEG-2 support
+            'mpeg4': ['mpeg4_cuvid'],  # MPEG-4 support
+            'vc1': ['vc1_cuvid'],  # VC-1 support
+        }
+
+        # Get potential decoders for this codec
+        potential_decoders = codec_to_decoders.get(video_codec.lower(), [])
+
+        # If no specific decoders for this codec but force GPU decode is enabled,
+        # try generic hardware decoders
+        if not potential_decoders and self.force_gpu_decode:
+            potential_decoders = [d for d in self.gpu_info['available_decoders']
+                                  if 'cuvid' in d or 'vaapi' in d]
+
+        # Prioritize NVIDIA CUVID if available (generally better performance)
+        nvidia_decoders = [d for d in potential_decoders if 'cuvid' in d]
+        intel_decoders = [d for d in potential_decoders if 'vaapi' in d]
+
+        # Try NVIDIA first, then Intel
+        for decoder_list in [nvidia_decoders, intel_decoders]:
+            for decoder in decoder_list:
+                if decoder in self.gpu_info['available_decoders']:
+                    logger.info(
+                        f"Using hardware decoder: {decoder} for codec: {video_codec}")
+                    return decoder
+
+        logger.info(
+            f"No hardware decoder available for codec: {video_codec}, using software decoding")
+        return None
 
     def get_best_encoder(self) -> tuple[str, dict]:
         """Get the best available encoder (GPU preferred, then CPU)"""
@@ -394,18 +533,66 @@ class MovieCompressor:
             logger.error(f"Encoder selection error: {e}")
             return False
 
+        # Get best available decoder for the input video codec
+        input_codec = video_stream.get('codec_name', '')
+        hardware_decoder = self.get_best_decoder(input_codec)
+
         # Build FFmpeg command
         cmd = ['ffmpeg']
 
-        # Add hardware device if needed
-        if encoder_config.get('hw_device'):
-            cmd.extend(['-vaapi_device', encoder_config['hw_device']])
+        # Add hardware device if needed (for encoding or decoding)
+        if encoder_config.get('hw_device') or hardware_decoder:
+            if encoder_config.get('hw_device'):
+                cmd.extend(['-vaapi_device', encoder_config['hw_device']])
+
+        # Add hardware decoder if available
+        if hardware_decoder:
+            if 'cuvid' in hardware_decoder:
+                # NVIDIA CUVID decoder
+                cmd.extend(['-hwaccel', 'cuvid', '-c:v', hardware_decoder])
+            elif 'vaapi' in hardware_decoder:
+                # Intel VAAPI decoder
+                cmd.extend(
+                    ['-hwaccel', 'vaapi', '-hwaccel_output_format', 'vaapi'])
 
         cmd.extend(['-i', str(input_path)])
 
-        # Add input filters for hardware encoding
-        if encoder_config.get('input_filters'):
-            cmd.extend(['-vf', ','.join(encoder_config['input_filters'])])
+        # Build video filter chain
+        video_filters = []
+
+        # Handle hardware decoding to encoding pipeline
+        if hardware_decoder and encoder_config.get('encoder'):
+            if 'cuvid' in hardware_decoder and 'nvenc' in encoder_config['encoder']:
+                # NVIDIA GPU pipeline: CUVID -> NVENC (no format conversion needed)
+                logger.info(
+                    "Using NVIDIA GPU-to-GPU pipeline (CUVID -> NVENC)")
+            elif 'cuvid' in hardware_decoder and 'vaapi' in encoder_config['encoder']:
+                # NVIDIA -> Intel pipeline: need to download and upload
+                video_filters.extend(['hwdownload', 'format=nv12', 'hwupload'])
+                logger.info("Using NVIDIA to Intel GPU pipeline")
+            elif 'vaapi' in hardware_decoder and 'nvenc' in encoder_config['encoder']:
+                # Intel -> NVIDIA pipeline: need to download and upload
+                video_filters.extend(['hwdownload', 'format=nv12'])
+                logger.info("Using Intel to NVIDIA GPU pipeline")
+            elif 'vaapi' in hardware_decoder and 'vaapi' in encoder_config['encoder']:
+                # Intel GPU pipeline: VAAPI -> VAAPI (no format conversion needed)
+                logger.info("Using Intel GPU-to-GPU pipeline (VAAPI -> VAAPI)")
+            else:
+                # Hardware decode to software encode
+                if 'cuvid' in hardware_decoder:
+                    video_filters.append('hwdownload')
+                elif 'vaapi' in hardware_decoder:
+                    video_filters.append('hwdownload')
+                logger.info(
+                    "Using hardware decode to software encode pipeline")
+        elif encoder_config.get('input_filters'):
+            # Software decode to hardware encode
+            video_filters.extend(encoder_config['input_filters'])
+            logger.info("Using software decode to hardware encode pipeline")
+
+        # Add video filters if any
+        if video_filters:
+            cmd.extend(['-vf', ','.join(video_filters)])
 
         # Video encoding settings
         cmd.extend(['-c:v', encoder_config['encoder']])
@@ -705,7 +892,17 @@ def main():
         print(f"GPU acceleration: {enable_gpu}")
 
         if enable_gpu:
-            print(f"GPU capabilities: {compressor.gpu_info}")
+            print(f"GPU capabilities:")
+            print(f"  NVIDIA: {compressor.gpu_info['nvidia']}")
+            print(f"  Intel: {compressor.gpu_info['intel']}")
+            print(
+                f"  Available encoders: {compressor.gpu_info['available_encoders']}")
+            print(
+                f"  Available decoders: {compressor.gpu_info['available_decoders']}")
+            print(
+                f"  Preferred encoder: {compressor.gpu_info['preferred_encoder']}")
+            print(
+                f"  Preferred decoder: {compressor.gpu_info['preferred_decoder']}")
 
         print(f"Video files found: {len(video_files)}")
 
