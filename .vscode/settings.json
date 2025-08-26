@@ -1,9 +1,23 @@
 {
     "cSpell.words": [
+        "accel",
         "adduser",
+        "colorspace",
+        "faststart",
+        "ffprobe",
+        "healthcheck",
+        "hwupload",
         "jrottenberg",
+        "lavfi",
+        "levelname",
         "libaom",
-        "passthrough"
+        "libsvtav",
+        "movflags",
+        "nvenc",
+        "passthrough",
+        "PYTHONUNBUFFERED",
+        "testsrc",
+        "vaapi"
     ],
-    "python.analysis.autoImportCompletions": true
+    "python.analysis.autoImportCompletions": true,
 }

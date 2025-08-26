@@ -40,26 +40,33 @@ The container uses separate input and output directories:
 
 ### Command Line Options
 
-```bash
-python3 main.py <input_dir> <output_dir> [options]
+The app now reads all settings from environment variables.
 
-Options:
-  --target-size FLOAT  Target file size in GB (default: 12.0)
-  --dry-run           Dry run mode - only show files to be processed
-  -h, --help          Show help information
+Quick run:
+
+```bash
+# Edit .env (copy from .env.example)
+cp .env.example .env
+# Update INPUT_DIR/OUTPUT_DIR and other values
+
+# Run locally
+INPUT_DIR=/path/to/in OUTPUT_DIR=/path/to/out TARGET_SIZE=12.0 python3 main.py
+
+# Dry run
+DRY_RUN=true python3 main.py
 ```
 
 ### Docker Usage
 
 ```bash
 # Build image
-docker-compose build
+docker compose build
 
-# Run compression task
-docker-compose up -d
+# Run compression task (reads .env)
+docker compose up -d
 
 # View logs
-docker-compose logs -f batch-movie-compressor
+docker compose logs -f batch-movie-compressor
 ```
 
 ## Compression Settings
@@ -115,15 +122,11 @@ deploy:
 
 ### Encoding Speed Adjustment
 
-Adjust encoding presets in `config.py`:
+Adjust via env vars in `.env`:
 
-```python
-# SVT-AV1: 0-12 (0=slowest best quality, 12=fastest lowest quality)
-'preset': '6'  # Default balanced setting
-
-# libaom-av1: 0-8 (0=slowest best quality, 8=fastest lowest quality)
-'cpu_used': '4'  # Default balanced setting
-```
+- For SVT-AV1: set `PREFERRED_ENCODER=libsvtav1` and tune `TARGET_SIZE`
+- For libaom-av1: set `PREFERRED_ENCODER=libaom-av1`
+- Minimum bitrate: `MIN_VIDEO_BITRATE_KBPS`
 
 ## Example Output
 
@@ -192,17 +195,16 @@ This project is licensed under the MIT License.
 
 ```text
 batch-movie-compressor/
-├── main.py              # Main program
-├── config.py           # Configuration file
+├── main.py              # Main program (env-driven config)
 ├── Dockerfile          # Docker image definition
 ├── docker-compose.yml  # Docker Compose configuration
 ├── .env.example        # Environment variables example
 ├── README.md           # Documentation
 ├── LICENSE             # License
 └── data/               # Example data directories
-    ├── in/             # Input directory (put original movies here)
-    ├── out/            # Output directory (compressed movies)
-    └── README.md       # Data directory documentation
+   ├── in/             # Input directory (put original movies here)
+   ├── out/            # Output directory (compressed movies)
+   └── README.md       # Data directory documentation
 ```
 
 ## Changelog

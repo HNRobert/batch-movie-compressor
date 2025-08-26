@@ -4,7 +4,6 @@ Batch Movie Compressor - AV1 encoding for 4K HDR movies
 Compress ~30GB movies to ~12GB while maintaining 4K HDR10 quality
 """
 
-import argparse
 import json
 import logging
 import os
@@ -12,18 +11,53 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('/data/out/compression.log'),
-        logging.StreamHandler()
-    ]
-)
 logger = logging.getLogger(__name__)
+
+
+def setup_logging(output_dir: Optional[Path]) -> None:
+    """Configure logging for both console and file.
+
+    Priority for log file location:
+    1) Environment variable LOG_PATH if set
+    2) <output_dir>/compression.log if output_dir provided
+    If neither works, fall back to console-only logging.
+    Log level can be controlled via LOG_LEVEL or FFMPEG_LOG_LEVEL env vars.
+    """
+    # Determine log level from env; default INFO
+    level_name = os.environ.get('LOG_LEVEL') or os.environ.get(
+        'FFMPEG_LOG_LEVEL') or 'INFO'
+    level = getattr(logging, str(level_name).upper(), logging.INFO)
+
+    # Clear existing handlers to avoid duplicate logs on reruns (e.g., in VS Code)
+    root = logging.getLogger()
+    for h in list(root.handlers):
+        root.removeHandler(h)
+
+    handlers: List[logging.Handler] = [logging.StreamHandler()]
+
+    log_path_env = os.environ.get('LOG_PATH')
+    log_path: Optional[Path] = None
+    if log_path_env:
+        log_path = Path(log_path_env)
+    elif output_dir is not None:
+        log_path = Path(output_dir) / 'compression.log'
+
+    # Try to create file handler if possible
+    if log_path is not None:
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            handlers.insert(0, logging.FileHandler(log_path))
+        except Exception:
+            # If file handler fails, continue with console only
+            pass
+
+    logging.basicConfig(
+        level=level,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=handlers,
+    )
 
 
 class MovieCompressor:
@@ -34,6 +68,27 @@ class MovieCompressor:
         self.target_size_mb = target_size_gb * 1024
         self.recursive = recursive
         self.enable_gpu = enable_gpu
+
+        # Environment-driven tunables
+        self.audio_bitrate_kbps_default = int(
+            os.environ.get('AUDIO_BITRATE_KBPS', '640'))
+        self.safety_reserve_mb = float(
+            os.environ.get('SAFETY_RESERVE_MB', '100'))
+        self.min_video_bitrate_kbps = int(
+            os.environ.get('MIN_VIDEO_BITRATE_KBPS', '1000'))
+        self.vaapi_device = os.environ.get(
+            'VAAPI_DEVICE', '/dev/dri/renderD128')
+        self.preferred_encoder_env = os.environ.get(
+            'PREFERRED_ENCODER')  # e.g., av1_nvenc, av1_vaapi, libsvtav1
+        self.output_format_env = os.environ.get(
+            'OUTPUT_FORMAT')  # e.g., mkv, mp4
+        self.eac3_bitrate_kbps = int(
+            os.environ.get('EAC3_BITRATE_KBPS', '640'))
+        self.aac_bitrate_kbps = int(os.environ.get('AAC_BITRATE_KBPS', '192'))
+        self.progress_log_interval_start = int(
+            os.environ.get('PROGRESS_LOG_INTERVAL_START_SEC', '2'))
+        self.progress_log_interval = int(
+            os.environ.get('PROGRESS_LOG_INTERVAL_SEC', '60'))
 
         # GPU acceleration capabilities
         self.gpu_info = {
@@ -54,6 +109,15 @@ class MovieCompressor:
         self._check_ffmpeg()
         if self.enable_gpu:
             self._detect_gpu_capabilities()
+
+    def _libaom_cpu_used(self) -> str:
+        """Compute libaom-av1 -cpu-used as (CPU count - 1), clamped to 0..8"""
+        try:
+            cpu_cnt = os.cpu_count() or 1
+        except Exception:
+            cpu_cnt = 1
+        val = max(0, min(8, cpu_cnt - 1))
+        return str(val)
 
     def _check_ffmpeg(self):
         """Check if FFmpeg is installed and supports AV1"""
@@ -102,7 +166,7 @@ class MovieCompressor:
             intel_encoders = ['h264_vaapi', 'hevc_vaapi', 'av1_vaapi']
             for encoder in intel_encoders:
                 result = subprocess.run(
-                    ['ffmpeg', '-hide_banner', '-vaapi_device', '/dev/dri/renderD128',
+                    ['ffmpeg', '-hide_banner', '-vaapi_device', self.vaapi_device,
                      '-f', 'lavfi', '-i', 'testsrc2=duration=0.1:size=64x64:rate=1',
                      '-vf', 'format=nv12,hwupload', '-c:v', encoder, '-f', 'null', '-'],
                     capture_output=True, timeout=5
@@ -149,17 +213,23 @@ class MovieCompressor:
             return {}
 
     def calculate_bitrate(self, duration: float, target_size_mb: float, audio_bitrate_kbps: int = 640) -> int:
-        """Calculate target video bitrate"""
-        # Reserve space for audio (640kbps for 7.1 audio)
-        audio_size_mb = (audio_bitrate_kbps * duration) / (8 * 1024)
-        video_size_mb = target_size_mb - audio_size_mb - 100  # Reserve 100MB for safety
+        """Calculate target video bitrate using env-configured safety and minimums"""
+        # Use env-configured audio bitrate if not explicitly provided
+        effective_audio_kbps = int(os.environ.get(
+            'AUDIO_BITRATE_KBPS', str(audio_bitrate_kbps)))
+        audio_size_mb = (effective_audio_kbps * duration) / (8 * 1024)
+        video_size_mb = target_size_mb - audio_size_mb - self.safety_reserve_mb
 
         if video_size_mb <= 0:
-            logger.warning("Target size too small, using minimum bitrate")
-            return 1000
+            logger.warning(
+                "Target size too small after safety reserve, using minimum bitrate")
+            return self.min_video_bitrate_kbps
 
         video_bitrate_kbps = int((video_size_mb * 8 * 1024) / duration)
-        return max(video_bitrate_kbps, 1000)  # Minimum 1Mbps
+        return max(video_bitrate_kbps, self.min_video_bitrate_kbps)
+
+    def min_video_bit_rate(self) -> int:
+        return self.min_video_bitrate_kbps
 
     def get_best_encoder(self) -> tuple[str, dict]:
         """Get the best available encoder (GPU preferred, then CPU)"""
@@ -168,8 +238,41 @@ class MovieCompressor:
             'hw_device': None,
             'input_filters': [],
             'encoder_params': {},
-            'output_format': 'mkv'
+            'output_format': (self.output_format_env or 'mkv')
         }
+
+        # If a preferred encoder is forced via env, use that directly
+        if self.preferred_encoder_env:
+            forced = self.preferred_encoder_env.strip()
+            if forced in ('av1_nvenc', 'hevc_nvenc', 'h264_nvenc'):
+                encoder_config.update({
+                    'encoder': forced,
+                    'encoder_params': {
+                        'preset': 'p4' if forced == 'av1_nvenc' else 'medium',
+                        'tune': 'hq',
+                        'rc': 'vbr',
+                    }
+                })
+                return forced, encoder_config
+            if forced in ('av1_vaapi', 'hevc_vaapi', 'h264_vaapi'):
+                encoder_config.update({
+                    'encoder': forced,
+                    'hw_device': self.vaapi_device,
+                    'input_filters': ['format=nv12', 'hwupload'],
+                    'encoder_params': {
+                        'quality': '25',
+                    }
+                })
+                return forced, encoder_config
+            if forced in ('libsvtav1', 'libaom-av1'):
+                encoder_config.update({
+                    'encoder': forced,
+                    'encoder_params': {
+                        'preset': '6' if forced == 'libsvtav1' else None,
+                        'cpu-used': self._libaom_cpu_used() if forced == 'libaom-av1' else None,
+                    }
+                })
+                return forced, encoder_config
 
         # Try GPU encoders first if enabled
         if self.enable_gpu and self.gpu_info['preferred_encoder']:
@@ -190,7 +293,7 @@ class MovieCompressor:
             elif preferred == 'av1_vaapi':
                 encoder_config.update({
                     'encoder': 'av1_vaapi',
-                    'hw_device': '/dev/dri/renderD128',
+                    'hw_device': self.vaapi_device,
                     'input_filters': ['format=nv12', 'hwupload'],
                     'encoder_params': {
                         'quality': '25',  # Good quality
@@ -207,7 +310,8 @@ class MovieCompressor:
                         'tune': 'hq',
                         'rc': 'vbr',
                     },
-                    'output_format': 'mp4'  # HEVC works better with MP4
+                    # HEVC works better with MP4
+                    'output_format': (self.output_format_env or 'mp4')
                 })
                 logger.info("Using NVIDIA HEVC hardware encoder (fallback)")
                 return preferred, encoder_config
@@ -215,12 +319,12 @@ class MovieCompressor:
             elif preferred == 'hevc_vaapi':
                 encoder_config.update({
                     'encoder': 'hevc_vaapi',
-                    'hw_device': '/dev/dri/renderD128',
+                    'hw_device': self.vaapi_device,
                     'input_filters': ['format=nv12', 'hwupload'],
                     'encoder_params': {
                         'quality': '25',
                     },
-                    'output_format': 'mp4'
+                    'output_format': (self.output_format_env or 'mp4')
                 })
                 logger.info(
                     "Using Intel VAAPI HEVC hardware encoder (fallback)")
@@ -237,7 +341,7 @@ class MovieCompressor:
                         'encoder': encoder,
                         'encoder_params': {
                             'preset': '6' if encoder == 'libsvtav1' else None,
-                            'cpu-used': '4' if encoder == 'libaom-av1' else None,
+                            'cpu-used': self._libaom_cpu_used() if encoder == 'libaom-av1' else None,
                         }
                     })
                     logger.info(f"Using software AV1 encoder: {encoder}")
@@ -331,6 +435,14 @@ class MovieCompressor:
                 '-pix_fmt', 'yuv420p10le',  # 10-bit for HDR
             ])
 
+            # Log CPU core count when using software encoding
+            try:
+                cpu_cores = os.cpu_count() or 1
+            except Exception:
+                cpu_cores = 1
+            logger.info(
+                f"Software encoding selected; CPU cores available: {cpu_cores}")
+
             # Software encoder specific parameters
             if encoder_config['encoder'] == 'libsvtav1':
                 if encoder_config['encoder_params'].get('preset'):
@@ -359,9 +471,11 @@ class MovieCompressor:
             channels = best_audio.get('channels', 2)
 
             if channels >= 6:  # 5.1 or more channels
-                cmd.extend(['-c:a', 'eac3', '-b:a', '640k'])
+                cmd.extend(['-c:a', 'eac3', '-b:a',
+                           f'{self.eac3_bitrate_kbps}k'])
             else:  # Stereo
-                cmd.extend(['-c:a', 'aac', '-b:a', '192k'])
+                cmd.extend(
+                    ['-c:a', 'aac', '-b:a', f'{self.aac_bitrate_kbps}k'])
 
         # Output options
         cmd.extend([
@@ -400,12 +514,12 @@ class MovieCompressor:
                                     current_elapsed = time.time() - start_time
 
                                     # Determine logging interval based on elapsed time
-                                    if current_elapsed <= 10:
-                                        # First 10 seconds: log every 2 seconds
-                                        log_interval = 2
+                                    if current_elapsed <= 60:
+                                        # First seconds: log at configured fast interval
+                                        log_interval = self.progress_log_interval_start
                                     else:
-                                        # After 10 seconds: log every minute
-                                        log_interval = 60
+                                        # After threshold: log at configured normal interval
+                                        log_interval = self.progress_log_interval
 
                                     # Only log if enough time has passed since last log
                                     if current_elapsed - last_log_time >= log_interval:
@@ -554,53 +668,43 @@ class MovieCompressor:
             f"Batch compression completed: {success_count}/{total_count} successful")
 
 
+def _getenv_bool(name: str, default: bool) -> bool:
+    return os.environ.get(name, str(default)).strip().lower() in ('true', '1', 'yes', 'on')
+
+
 def main():
-    # Get default values from environment variables
-    default_target_size = float(os.environ.get('TARGET_SIZE', 12.0))
-    default_recursive = os.environ.get(
-        'RECURSIVE', 'true').lower() in ('true', '1', 'yes', 'on')
-    default_gpu = os.environ.get(
-        'ENABLE_GPU', 'true').lower() in ('true', '1', 'yes', 'on')
+    # Read configuration from environment variables only
+    input_dir = os.environ.get('INPUT_DIR', '/data/in')
+    output_dir = os.environ.get('OUTPUT_DIR', '/data/out')
+    target_size_gb = float(os.environ.get('TARGET_SIZE', '12.0'))
+    recursive = _getenv_bool('RECURSIVE', True)
+    enable_gpu = _getenv_bool('ENABLE_GPU', True)
+    dry_run = _getenv_bool('DRY_RUN', False)
 
-    parser = argparse.ArgumentParser(
-        description='Batch Movie Compressor - AV1 encoding with GPU acceleration support')
-    parser.add_argument('input_dir', help='Input directory path')
-    parser.add_argument('output_dir', help='Output directory path')
-    parser.add_argument('--target-size', type=float, default=default_target_size,
-                        help=f'Target file size in GB (default: {default_target_size}GB)')
-    parser.add_argument('--recursive', action='store_true', default=default_recursive,
-                        help='Search recursively in subdirectories (default: %(default)s)')
-    parser.add_argument('--no-recursive', dest='recursive', action='store_false',
-                        help='Search only in the top-level directory')
-    parser.add_argument('--gpu', action='store_true', default=default_gpu,
-                        help='Enable GPU acceleration (default: %(default)s)')
-    parser.add_argument('--no-gpu', dest='gpu', action='store_false',
-                        help='Disable GPU acceleration, use CPU only')
-    parser.add_argument('--dry-run', action='store_true',
-                        help='Dry run mode - only show files to be processed')
-
-    args = parser.parse_args()
+    # Configure logging using output_dir (or LOG_PATH)
+    try:
+        setup_logging(Path(output_dir))
+    except Exception:
+        pass
 
     # Validate input directory
-    if not os.path.exists(args.input_dir):
-        logger.error(f"Input directory does not exist: {args.input_dir}")
+    if not os.path.exists(input_dir):
+        logger.error(f"Input directory does not exist: {input_dir}")
         sys.exit(1)
 
-    if args.dry_run:
-        # Dry run mode
+    if dry_run:
         compressor = MovieCompressor(
-            args.input_dir, args.output_dir, args.target_size, args.recursive, args.gpu)
+            input_dir, output_dir, target_size_gb, recursive, enable_gpu)
         video_files = compressor.find_video_files()
 
         print("\n=== DRY RUN MODE ===")
-        print(f"Input directory: {args.input_dir}")
-        print(f"Output directory: {args.output_dir}")
-        print(f"Target size: {args.target_size}GB")
-        print(f"Recursive search: {args.recursive}")
-        print(f"GPU acceleration: {args.gpu}")
+        print(f"Input directory: {input_dir}")
+        print(f"Output directory: {output_dir}")
+        print(f"Target size: {target_size_gb}GB")
+        print(f"Recursive search: {recursive}")
+        print(f"GPU acceleration: {enable_gpu}")
 
-        # Show GPU capabilities if enabled
-        if args.gpu:
+        if enable_gpu:
             print(f"GPU capabilities: {compressor.gpu_info}")
 
         print(f"Video files found: {len(video_files)}")
@@ -609,25 +713,23 @@ def main():
             print("\nFiles to be processed:")
             for video_file in video_files:
                 file_size_gb = video_file.stat().st_size / (1024**3)
-                rel_path = video_file.relative_to(Path(args.input_dir))
-                # Show what filename would be generated
+                rel_path = video_file.relative_to(Path(input_dir))
                 output_filename = compressor._generate_output_filename(
                     video_file)
                 print(
                     f"  - {rel_path} ({file_size_gb:.2f}GB) -> {output_filename}")
-
         return
 
     # Normal execution mode
     logger.info("Starting batch movie compression")
-    logger.info(f"Input directory: {args.input_dir}")
-    logger.info(f"Output directory: {args.output_dir}")
-    logger.info(f"Target size: {args.target_size}GB")
-    logger.info(f"Recursive search: {args.recursive}")
-    logger.info(f"GPU acceleration: {args.gpu}")
+    logger.info(f"Input directory: {input_dir}")
+    logger.info(f"Output directory: {output_dir}")
+    logger.info(f"Target size: {target_size_gb}GB")
+    logger.info(f"Recursive search: {recursive}")
+    logger.info(f"GPU acceleration: {enable_gpu}")
 
     compressor = MovieCompressor(
-        args.input_dir, args.output_dir, args.target_size, args.recursive, args.gpu)
+        input_dir, output_dir, target_size_gb, recursive, enable_gpu)
     compressor.process_all_videos()
 
 

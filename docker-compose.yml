@@ -25,10 +25,25 @@ services:
     # Environment variables
     environment:
       - PYTHONUNBUFFERED=1
+      - INPUT_DIR=${INPUT_DIR:-./data/in}
+      - OUTPUT_DIR=${OUTPUT_DIR:-./data/out}
       - FFMPEG_LOG_LEVEL=${FFMPEG_LOG_LEVEL:-info}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - LOG_PATH=${LOG_PATH:-/data/out/compression.log}
       - TARGET_SIZE=${TARGET_SIZE:-12.0}
       - RECURSIVE=${RECURSIVE:-true}
       - ENABLE_GPU=${ENABLE_GPU:-true}
+      - DRY_RUN=${DRY_RUN:-false}
+      - VAAPI_DEVICE=${VAAPI_DEVICE:-/dev/dri/renderD128}
+      - PREFERRED_ENCODER=${PREFERRED_ENCODER:-}
+      - OUTPUT_FORMAT=${OUTPUT_FORMAT:-}
+      - AUDIO_BITRATE_KBPS=${AUDIO_BITRATE_KBPS:-640}
+      - EAC3_BITRATE_KBPS=${EAC3_BITRATE_KBPS:-640}
+      - AAC_BITRATE_KBPS=${AAC_BITRATE_KBPS:-192}
+      - MIN_VIDEO_BITRATE_KBPS=${MIN_VIDEO_BITRATE_KBPS:-1000}
+      - SAFETY_RESERVE_MB=${SAFETY_RESERVE_MB:-100}
+      - PROGRESS_LOG_INTERVAL_START_SEC=${PROGRESS_LOG_INTERVAL_START_SEC:-2}
+      - PROGRESS_LOG_INTERVAL_SEC=${PROGRESS_LOG_INTERVAL_SEC:-60}
 
     # Volume mounts - separate input and output directories
     volumes:
@@ -50,17 +65,8 @@ services:
     # Working directory
     working_dir: /app
 
-    # Default command - process movies from /data/in to /data/out
-    # The recursive flag is controlled by the RECURSIVE environment variable
-    command:
-      [
-        'python',
-        'main.py',
-        '/data/in',
-        '/data/out',
-        '--target-size',
-        '${TARGET_SIZE:-12}',
-      ]
+    # Default command - script now reads all settings from env variables
+    command: ['python', 'main.py']
 
     # Restart policy
     restart: unless-stopped
@@ -85,7 +91,20 @@ services:
 # TARGET_SIZE=12.0
 # RECURSIVE=true
 # ENABLE_GPU=true
+# DRY_RUN=false
 # FFMPEG_LOG_LEVEL=info
+# LOG_LEVEL=info
+# LOG_PATH=/data/out/compression.log
+# VAAPI_DEVICE=/dev/dri/renderD128
+# PREFERRED_ENCODER=av1_nvenc
+# OUTPUT_FORMAT=mkv
+# AUDIO_BITRATE_KBPS=640
+# EAC3_BITRATE_KBPS=640
+# AAC_BITRATE_KBPS=192
+# MIN_VIDEO_BITRATE_KBPS=1000
+# SAFETY_RESERVE_MB=100
+# PROGRESS_LOG_INTERVAL_START_SEC=2
+# PROGRESS_LOG_INTERVAL_SEC=60
 
 # GPU Usage:
 # For NVIDIA GPU: docker-compose -f docker-compose.yml -f docker-compose.gpu.yml up

@@ -1,0 +1,80 @@
+{
+    // VS Code debug configurations for local runs
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Batch Movie Compressor (Run)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            // All runtime options are passed via environment variables
+            "env": {
+                // Directories
+                "INPUT_DIR": "${workspaceFolder}/data/in",
+                "OUTPUT_DIR": "${workspaceFolder}/data/out",
+                // Core behavior
+                "TARGET_SIZE": "12.0", // GB
+                "RECURSIVE": "true",
+                "ENABLE_GPU": "true",
+                "DRY_RUN": "false",
+                // Logging
+                "FFMPEG_LOG_LEVEL": "info",
+                "LOG_LEVEL": "info",
+                "LOG_PATH": "${workspaceFolder}/data/out/compression.log",
+                // GPU/Encoder
+                "VAAPI_DEVICE": "/dev/dri/renderD128",
+                "PREFERRED_ENCODER": "", // e.g., av1_nvenc|av1_vaapi|libsvtav1|libaom-av1
+                "OUTPUT_FORMAT": "", // mkv|mp4 (optional)
+                // Bitrates and safety
+                "AUDIO_BITRATE_KBPS": "640",
+                "EAC3_BITRATE_KBPS": "640",
+                "AAC_BITRATE_KBPS": "192",
+                "MIN_VIDEO_BITRATE_KBPS": "1000",
+                "SAFETY_RESERVE_MB": "100",
+                // Progress logging
+                "PROGRESS_LOG_INTERVAL_START_SEC": "2",
+                "PROGRESS_LOG_INTERVAL_SEC": "60"
+            },
+            // Load variables from .env (optional). You can create .env at repo root.
+            "envFile": "${workspaceFolder}/.env"
+        },
+        {
+            "name": "Python: Batch Movie Compressor (Dry Run)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                // Directories
+                "INPUT_DIR": "${workspaceFolder}/data/in",
+                "OUTPUT_DIR": "${workspaceFolder}/data/out",
+                // Core behavior
+                "TARGET_SIZE": "12.0",
+                "RECURSIVE": "true",
+                "ENABLE_GPU": "true",
+                "DRY_RUN": "true",
+                // Logging
+                "FFMPEG_LOG_LEVEL": "info",
+                "LOG_LEVEL": "info",
+                "LOG_PATH": "${workspaceFolder}/data/out/compression.log",
+                // GPU/Encoder
+                "VAAPI_DEVICE": "/dev/dri/renderD128",
+                "PREFERRED_ENCODER": "",
+                "OUTPUT_FORMAT": "",
+                // Bitrates and safety
+                "AUDIO_BITRATE_KBPS": "640",
+                "EAC3_BITRATE_KBPS": "640",
+                "AAC_BITRATE_KBPS": "192",
+                "MIN_VIDEO_BITRATE_KBPS": "1000",
+                "SAFETY_RESERVE_MB": "100",
+                // Progress logging
+                "PROGRESS_LOG_INTERVAL_START_SEC": "2",
+                "PROGRESS_LOG_INTERVAL_SEC": "60"
+            },
+            "envFile": "${workspaceFolder}/.env"
+        }
+    ]
+}
