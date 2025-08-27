@@ -13,11 +13,11 @@ services:
     #           capabilities: [gpu]
 
     # Resource limits - adjust based on your hardware
-    deploy:
-      resources:
-        limits:
-          cpus: '4.0'
-          memory: 8G
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '4.0'
+    #       memory: 8G
 
     # Environment variables
     environment:
@@ -68,7 +68,7 @@ services:
     command: ['python', 'main.py']
 
     # Restart policy
-    restart: unless-stopped
+    restart: no
 
     # Health check
     healthcheck:
